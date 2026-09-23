@@ -1,6 +1,14 @@
 # planazo-api-gateway
 
-Único punto de entrada HTTP de Planazo. Valida el JWT fijo de los usuarios semilla, aplica un límite de peticiones por IP, y reenvía cada ruta al microservicio dueño. `agent` vive aquí dentro como un módulo — no tiene repo propio (ver [`planazo-frontend/docs/arquitectura.md`](https://github.com/planazo-team/planazo-frontend/blob/main/docs/arquitectura.md)).
+Único punto de entrada HTTP de Planazo. Valida el JWT fijo de los usuarios semilla, aplica un límite de peticiones por IP, y reenvía cada ruta al microservicio dueño. `agent` vive aquí dentro como un módulo — no tiene repo propio.
+
+| | |
+|---|---|
+| **Dueño** | Juan Diego Melo |
+| **Retos** | ninguno propio — es infraestructura |
+| **Datos** | ninguno (sin base de datos, por diseño) |
+| **Contexto general** | [planazo-frontend/docs/contexto.md](https://github.com/planazo-team/planazo-frontend/blob/main/docs/contexto.md) |
+| **Especificación** | [planazo-frontend/docs/arquitectura.md](https://github.com/planazo-team/planazo-frontend/blob/main/docs/arquitectura.md) |
 
 **No tiene base de datos ni lógica de negocio propia**, salvo firmar el JWT y armar el plan del agente.
 
