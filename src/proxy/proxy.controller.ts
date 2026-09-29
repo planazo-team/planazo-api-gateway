@@ -16,27 +16,27 @@ export class ProxyController {
   private readonly promoUrl = (process.env.PROMO_URL ?? 'http://localhost:3002').replace(/\/$/, '');
   private readonly gameUrl = (process.env.GAME_URL ?? 'http://localhost:3003').replace(/\/$/, '');
 
-  @All('places*')
+  @All(['places', 'places/*splat'])
   places(@Req() req: Request, @Res() res: Response) {
     return forward(this.bookingUrl, req, res);
   }
 
-  @All('reservations*')
+  @All(['reservations', 'reservations/*splat'])
   reservations(@Req() req: Request, @Res() res: Response) {
     return forward(this.bookingUrl, req, res);
   }
 
-  @All('events*')
+  @All(['events', 'events/*splat'])
   events(@Req() req: Request, @Res() res: Response) {
     return forward(this.bookingUrl, req, res);
   }
 
-  @All('promos*')
+  @All(['promos', 'promos/*splat'])
   promos(@Req() req: Request, @Res() res: Response) {
     return forward(this.promoUrl, req, res);
   }
 
-  @All('rooms*')
+  @All(['rooms', 'rooms/*splat'])
   rooms(@Req() req: Request, @Res() res: Response) {
     return forward(this.gameUrl, req, res);
   }
