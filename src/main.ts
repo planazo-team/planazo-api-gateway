@@ -18,9 +18,13 @@ function allowedOrigins(): string[] | boolean {
 /** En producción no se arranca con secretos de desarrollo: mejor caerse al inicio que firmar tokens débiles. */
 function assertProductionSecrets() {
   if (process.env.NODE_ENV !== 'production') return;
-  const missing = ['JWT_SECRET', 'GATEWAY_KEY'].filter((k) => !process.env[k] || process.env[k]!.length < 16);
+  // JWT_SECRET pide 32: game (Java/Nimbus) rechaza claves HS256 de menos de 256 bits.
+  const minimo: Record<string, number> = { JWT_SECRET: 32, GATEWAY_KEY: 16 };
+  const missing = Object.keys(minimo).filter((k) => !process.env[k] || process.env[k]!.length < minimo[k]);
   if (missing.length) {
-    throw new Error(`Faltan secretos obligatorios en producción (mínimo 16 caracteres): ${missing.join(', ')}`);
+    throw new Error(
+      `Faltan secretos obligatorios en producción (JWT_SECRET ≥ 32 caracteres, GATEWAY_KEY ≥ 16): ${missing.join(', ')}`,
+    );
   }
 }
 

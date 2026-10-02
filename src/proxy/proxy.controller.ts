@@ -40,4 +40,13 @@ export class ProxyController {
   rooms(@Req() req: Request, @Res() res: Response) {
     return forward(this.gameUrl, req, res);
   }
+
+  /**
+   * API REST del minijuego en Java (planazo-game): /api/salas → GAME_URL/api/v1/salas.
+   * Game valida el JWT por su cuenta, así que se le reenvía el token.
+   */
+  @All(['salas', 'salas/*splat', 'leaderboard', 'leaderboard/*splat', 'historico', 'historico/*splat'])
+  game(@Req() req: Request, @Res() res: Response) {
+    return forward(this.gameUrl, req, res, { upstreamPrefix: '/api/v1', passToken: true });
+  }
 }
