@@ -11,9 +11,19 @@ interface GatewayUser {
 /** Cuánto se espera a un servicio antes de responder 502. */
 const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS ?? 10_000);
 
+export interface ForwardOptions {
+  /** Prefijo que el servicio pone a sus rutas, p. ej. `/api/v1` en game (Java). */
+  upstreamPrefix?: string;
+  /**
+   * Reenvía también `Authorization: Bearer <jwt>`. Lo necesita game, que valida
+   * el mismo JWT por su cuenta (HS256, mismo secreto) en vez de leer `x-user-*`.
+   */
+  passToken?: boolean;
+}
+
 /**
  * Reenvía la petición al servicio dueño de la ruta, quitando el prefijo /api
- * (booking/promo/game exponen sus rutas sin ese prefijo) y pasando quién es
+ * (booking/promo exponen sus rutas sin ese prefijo) y pasando quién es
  * el usuario en headers, ya verificado por el gateway.
  *
  * Seguridad: los headers `x-user-*` los pone SIEMPRE el gateway a partir del JWT;
@@ -21,10 +31,11 @@ const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS ?? 10_000);
  * `x-gateway-key`, un secreto compartido con los servicios, para que ninguno
  * acepte peticiones que no vengan de aquí aunque su URL sea pública.
  */
-export async function forward(base: string, req: Request, res: Response) {
+export async function forward(base: string, req: Request, res: Response, opts: ForwardOptions = {}) {
   const path = req.originalUrl.replace(/^\/api/, '');
-  const url = `${base}${path}`;
+  const url = `${base}${opts.upstreamPrefix ?? ''}${path}`;
   const user = (req as Request & { user?: GatewayUser }).user;
+  const token = opts.passToken && req.headers.authorization ? { authorization: req.headers.authorization } : {};
 
   try {
     const upstream = await axios.request({
@@ -40,6 +51,7 @@ export async function forward(base: string, req: Request, res: Response) {
         'x-user-place-id': user?.placeId ?? '',
         'x-gateway-key': process.env.GATEWAY_KEY ?? '',
         'x-request-id': (req.headers['x-request-id'] as string) ?? cryptoRandomId(),
+        ...token,
       },
       validateStatus: () => true,
     });
