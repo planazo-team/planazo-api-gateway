@@ -7,6 +7,7 @@
 | **Dueño** | Juan Diego Melo |
 | **Retos** | ninguno propio — es infraestructura |
 | **Datos** | ninguno (sin base de datos, por diseño) |
+| **Producción** | `https://planazo-api-gateway-production.up.railway.app` (Railway, dominio público) |
 | **Contexto general** | [planazo-frontend/docs/contexto.md](https://github.com/planazo-team/planazo-frontend/blob/main/docs/contexto.md) |
 | **Especificación** | [planazo-frontend/docs/arquitectura.md](https://github.com/planazo-team/planazo-frontend/blob/main/docs/arquitectura.md) |
 
@@ -23,10 +24,12 @@
 | `* /api/reservations*` | `booking` | requiere token |
 | `* /api/events*` | `booking` | requiere token |
 | `* /api/promos*` | `promo` | requiere token |
-| `* /api/rooms*` | `game` | requiere token |
+| `* /api/salas*` · `/api/leaderboard*` · `/api/historico*` | `game` (Java), como `/api/v1/...` **y con el `Authorization: Bearer` reenviado**: game valida el JWT por su cuenta | requiere token |
+| `* /api/rooms*` | `game` (ruta del diseño anterior; game no la implementa) | requiere token |
 | `POST /api/plan` | módulo `agent` (interno) | requiere token |
+| `GET /api/auth/me` | el propio gateway | requiere token |
 
-`realtime` **no pasa por aquí**: el frontend se conecta a su WebSocket directamente (ver `NEXT_PUBLIC_REALTIME_URL` en el frontend).
+`realtime` **no pasa por aquí**: el frontend se conecta a su WebSocket directamente (`NEXT_PUBLIC_REALTIME_URL`). Tampoco el STOMP de `game` (`NEXT_PUBLIC_GAME_URL`). Booking y promo reciben solo `x-user-*` y `x-gateway-key`, nunca el token; game recibe el token porque lo valida él (lee los claims `sub` y `nombre`, por eso el JWT lleva `nombre` además de `name`).
 
 ---
 
@@ -38,7 +41,7 @@ cp .env.example .env
 npm run start:dev
 ```
 
-Levanta en `http://localhost:8080`. Sin `BOOKING_URL`/`PROMO_URL`/`GAME_URL` configurados apunta a `localhost:3001/3002/3003` — si esos servicios no están corriendo, el gateway responde `502` controlado (no se cae).
+Levanta en `http://localhost:8080`. Sin `BOOKING_URL`/`PROMO_URL`/`GAME_URL` configurados apunta a `localhost:3001/3002/3003`; game (Java) corre en `8082`, así que en local conviene `GAME_URL=http://localhost:8082`. Si un servicio no está corriendo, el gateway responde `502` controlado (no se cae).
 
 ### Probar sin nada más levantado
 
@@ -59,17 +62,22 @@ Usuarios semilla válidos: `u1`–`u6` (rol `cliente`), `b1`, `b2`, `b3` (rol `n
 
 Ver [`.env.example`](.env.example). En producción (Railway):
 
-- `JWT_SECRET`: genera uno largo, no reutilices el de desarrollo.
-- `BOOKING_URL` / `PROMO_URL` / `GAME_URL`: la URL pública que Railway le da a cada servicio cuando lo despliegues.
+- `JWT_SECRET`: 32 caracteres o más; el **mismo valor** en `realtime` (`JWT_SECRET`) y en `game` (`JWT_SECRETO`).
+- `BOOKING_URL` / `PROMO_URL` / `GAME_URL`: la URL **privada** de cada servicio (`http://planazo-booking.railway.internal:3001`, `http://planazo-promo.railway.internal:3002`, `http://planazo-game.railway.internal:8082`). Booking y promo no tienen dominio público.
+- `ALLOWED_ORIGINS`: `https://planazo-frontend.vercel.app,http://localhost:3000`. `RATE_LIMIT_PER_MINUTE=600` en producción.
 - `ANTHROPIC_API_KEY`: opcional. Sin ella, `/api/plan` responde con una plantilla simple en vez de llamar al modelo (así no bloquea a nadie mientras la consigues).
 
 ---
 
 ## Desplegar en Railway
 
-1. En Railway: **New Project → Deploy from GitHub repo** → elige `planazo-team/planazo-api-gateway`.
-2. En la pestaña **Variables** del servicio, agrega las mismas variables de `.env.example` (menos `PORT`, Railway lo asigna solo).
-3. Railway detecta Node y corre `npm install && npm run build && npm start` automáticamente (usa `package.json`).
-4. Copia la URL pública que te da Railway — es el `NEXT_PUBLIC_API_URL` que necesita el frontend.
+Ya está desplegado: `planazo-infra/scripts/railway-deploy-core.sh` crea este servicio junto con booking y promo, desde GitHub (rama `main`, builder Dockerfile, health check en `/api/health`) y con todas las variables de arriba. Cada push a `main` redespliega.
 
-Actualiza `BOOKING_URL`, `PROMO_URL` y `GAME_URL` a medida que tus compañeros desplieguen sus servicios — mientras tanto el gateway sigue funcionando, solo responde `502` en esas rutas.
+Para repetirlo o cambiar variables:
+
+```bash
+railway link --project <id-del-proyecto> --environment production
+JWT_SECRET=... GATEWAY_KEY=... bash ../planazo-infra/scripts/railway-deploy-core.sh
+```
+
+La URL pública del gateway es el `NEXT_PUBLIC_API_URL` del frontend en Vercel.
