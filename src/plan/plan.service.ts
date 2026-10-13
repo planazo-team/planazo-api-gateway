@@ -65,6 +65,7 @@ const SYSTEM = [
   'Eres el agente de Planazo, una app para armar salidas en la Zona G y la Zona T de Chapinero, Bogotá.',
   'Con lo que pide la persona propones una ruta de 2 o 3 paradas usando SOLO lugares del catálogo que recibes, en orden cronológico y a una hora realista para cada tipo de lugar.',
   'Ten en cuenta con quién va, el presupuesto (priceLevel 0 es gratis, 3 es caro) y el ánimo. Prefiere lugares con cupos libres; los que dicen "sin cupos" no los propongas.',
+  'El catálogo también tiene parques públicos gratis (de día o al atardecer) y spots para parchar como tejo, karaoke, juegos de mesa, salsa o food trucks: mézclalos con restaurantes y bares para que cada plan sea distinto y no repitas siempre los mismos lugares.',
   'Escribe en español colombiano, cercano y breve. Nada de listas ni markdown dentro de los textos.',
 ].join(' ');
 
@@ -172,7 +173,13 @@ export class PlanService {
 
     let order: string[];
     let intro: string;
-    if (has('rumba', 'bailar', 'fiesta', 'discoteca', 'farra', 'perrear')) {
+    if (has('parque', 'caminar', 'picnic', 'aire libre', 'naturaleza', 'sendero', 'cicl', 'yoga', 'de día', 'de dia', 'domingo')) {
+      order = ['aire-libre', 'restaurante', 'bar'];
+      intro = 'Arrancamos al aire libre, seguimos con algo de comer y cerramos con un trago.';
+    } else if (has('tejo', 'karaoke', 'juegos', 'billar', 'trivia', 'cerveza', 'chela', 'pola')) {
+      order = ['evento', 'bar', 'restaurante'];
+      intro = 'Plan de parche: algo para competir, cerveza y comida para cerrar.';
+    } else if (has('rumba', 'bailar', 'fiesta', 'discoteca', 'farra', 'perrear', 'salsa')) {
       order = ['restaurante', 'bar', 'discoteca'];
       intro = 'Comida para coger fuerza, un trago para calentar y cerramos bailando en la Zona T.';
     } else if (has('amigos', 'parche', 'grupo', 'somos', 'cumple')) {
@@ -209,7 +216,8 @@ export class PlanService {
       const options = places
         .filter((p) => p.category === cat && !used.has(p.id) && (p.freeSeats ?? 1) > 0)
         .sort((a, b) => (barato ? (a.priceLevel ?? 2) - (b.priceLevel ?? 2) : (b.freeSeats ?? 0) - (a.freeSeats ?? 0)));
-      const p = options[0];
+      // Uno de los tres mejores, para que dos personas no reciban siempre el mismo plan.
+      const p = options[Math.floor(Math.random() * Math.min(3, options.length))];
       if (!p) continue;
       used.add(p.id);
       stops.push({ placeId: p.id, placeName: p.name, category: p.category, hour: hours[cat] ?? '20:00', why: p.description ?? '' });
