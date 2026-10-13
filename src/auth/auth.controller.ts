@@ -1,7 +1,7 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, HttpException, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, HttpException, Logger, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
-import { createPlace, ownedPlaceId, type Who } from './booking.client';
+import { claimAccount, createPlace, ownedPlaceId, type Who } from './booking.client';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { SEED_USERS, type Role } from './seed-users';
 
@@ -14,6 +14,8 @@ type AuthedRequest = Request & { user: Who & { exp: number } };
 
 @Controller('auth')
 export class AuthController {
+  private readonly logger = new Logger(AuthController.name);
+
   constructor(private jwt: JwtService) {}
 
   private sign(who: Who): string {
@@ -37,11 +39,13 @@ export class AuthController {
   /**
    * POST /api/auth/login { name, role, deviceId } → { token, user }
    *
-   * Entra cualquiera escribiendo solo su nombre. El id es estable por
-   * dispositivo (`c-<deviceId>` o `n-<deviceId>`): al recargar o volver otro
-   * día con el mismo navegador sigue siendo la misma persona, con sus
-   * reservas, cupones y su negocio. Si es un negocio que ya creó su lugar, el
-   * token lo incluye.
+   * Entra cualquiera escribiendo solo su nombre, y cada nombre es único: el
+   * primer navegador que lo usa se queda con él (booking lo guarda). Ese
+   * navegador vuelve a entrar con su nombre cuando quiera; otro recibe 409
+   * NOMBRE_EN_USO con una sugerencia («Juan 2»). Dos nombres en el mismo
+   * navegador son dos cuentas: nadie hereda el negocio de otro por compartir
+   * computador. El id del token es `c-<cuenta>` o `n-<cuenta>`; si es un
+   * negocio que ya creó su lugar, el token lo incluye.
    */
   @Post('login')
   @HttpCode(200)
@@ -60,7 +64,21 @@ export class AuthController {
       throw new BadRequestException({ code: 'DISPOSITIVO_INVALIDO', message: 'Falta el identificador del dispositivo.' });
     }
 
-    const who: Who = { sub: `${role === 'negocio' ? 'n' : 'c'}-${deviceId}`, name, role };
+    // Si booking no responde, se entra con el id del navegador como antes:
+    // la demo no se cae por eso, solo se pierde la unicidad del nombre.
+    let cuenta = deviceId;
+    let nombre = name;
+    const r = await claimAccount(name, deviceId);
+    if (r.ok && r.accountId) {
+      cuenta = r.accountId;
+      nombre = r.name ?? name;
+    } else if (r.status === 409 || r.status === 400) {
+      throw new HttpException(r.data as object, r.status);
+    } else {
+      this.logger.warn(`No se pudo reservar el nombre en booking (status ${r.status}); se entra por dispositivo.`);
+    }
+
+    const who: Who = { sub: `${role === 'negocio' ? 'n' : 'c'}-${cuenta}`, name: nombre, role };
     if (role === 'negocio') {
       const placeId = await ownedPlaceId(who);
       if (placeId) who.placeId = placeId;
