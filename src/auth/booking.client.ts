@@ -56,3 +56,34 @@ export async function createPlace(who: Who, body: unknown) {
     };
   }
 }
+
+export interface Reclamo {
+  ok: boolean;
+  /** HTTP de booking; 0 si no respondió. */
+  status: number;
+  accountId?: string;
+  name?: string;
+  data?: unknown;
+}
+
+/**
+ * Reserva el nombre para este navegador (booking lo guarda en
+ * `booking.accounts`). `status: 0` es que booking no respondió.
+ */
+export async function claimAccount(name: string, deviceId: string): Promise<Reclamo> {
+  try {
+    const { data, status } = await axios.post(
+      `${bookingUrl()}/accounts/claim`,
+      { name, deviceId },
+      {
+        headers: { 'content-type': 'application/json', 'x-gateway-key': process.env.GATEWAY_KEY ?? '' },
+        timeout: 5_000,
+        validateStatus: () => true,
+      },
+    );
+    if (status === 200 && data?.accountId) return { ok: true, status, accountId: String(data.accountId), name: String(data.name ?? name) };
+    return { ok: false, status, data };
+  } catch {
+    return { ok: false, status: 0 };
+  }
+}
