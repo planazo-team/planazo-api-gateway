@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, HttpException, Logger, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, HttpException, Logger, Post, Req, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { claimAccount, createPlace, ownedPlaceId, type Who } from './booking.client';
@@ -64,19 +64,24 @@ export class AuthController {
       throw new BadRequestException({ code: 'DISPOSITIVO_INVALIDO', message: 'Falta el identificador del dispositivo.' });
     }
 
-    // Si booking no responde, se entra con el id del navegador como antes:
-    // la demo no se cae por eso, solo se pierde la unicidad del nombre.
-    let cuenta = deviceId;
-    let nombre = name;
-    const r = await claimAccount(name, deviceId);
-    if (r.ok && r.accountId) {
-      cuenta = r.accountId;
-      nombre = r.name ?? name;
-    } else if (r.status === 409 || r.status === 400) {
-      throw new HttpException(r.data as object, r.status);
-    } else {
-      this.logger.warn(`No se pudo reservar el nombre en booking (status ${r.status}); se entra por dispositivo.`);
+    // La cuenta la decide booking. Si no responde, se reintenta una vez y si
+    // sigue caído se pide reintentar: entrar «por navegador» mezclaría a dos
+    // personas que usan el mismo computador con nombres distintos.
+    let r = await claimAccount(name, deviceId);
+    if (!r.ok && r.status !== 409 && r.status !== 400) {
+      await new Promise((ok) => setTimeout(ok, 1_000));
+      r = await claimAccount(name, deviceId);
     }
+    if (r.status === 409 || r.status === 400) throw new HttpException(r.data as object, r.status);
+    if (!r.ok || !r.accountId) {
+      this.logger.warn(`No se pudo reservar el nombre en booking (status ${r.status}).`);
+      throw new ServiceUnavailableException({
+        code: 'SERVICIO_NO_DISPONIBLE',
+        message: 'No pudimos verificar tu nombre en este momento. Intenta de nuevo en unos segundos.',
+      });
+    }
+    const cuenta = r.accountId;
+    const nombre = r.name ?? name;
 
     const who: Who = { sub: `${role === 'negocio' ? 'n' : 'c'}-${cuenta}`, name: nombre, role };
     if (role === 'negocio') {
