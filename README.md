@@ -1,6 +1,6 @@
 # planazo-api-gateway
 
-Único punto de entrada HTTP de Planazo. Valida el JWT fijo de los usuarios semilla, aplica un límite de peticiones por IP, y reenvía cada ruta al microservicio dueño. `agent` vive aquí dentro como un módulo — no tiene repo propio.
+Único punto de entrada HTTP de Planazo. Hace el inicio de sesión con Google y firma el JWT de Planazo, lo valida en cada petición, aplica un límite de peticiones por IP, y reenvía cada ruta al microservicio dueño. `agent` vive aquí dentro como un módulo — no tiene repo propio.
 
 | | |
 |---|---|
@@ -11,7 +11,7 @@
 | **Contexto general** | [planazo-frontend/docs/contexto.md](https://github.com/planazo-team/planazo-frontend/blob/main/docs/contexto.md) |
 | **Especificación** | [planazo-frontend/docs/arquitectura.md](https://github.com/planazo-team/planazo-frontend/blob/main/docs/arquitectura.md) |
 
-**No tiene base de datos ni lógica de negocio propia**, salvo firmar el JWT y armar el plan del agente.
+**No tiene base de datos ni lógica de negocio propia**, salvo verificar el login con Google, firmar el JWT y armar el plan del agente.
 
 ---
 
@@ -19,7 +19,8 @@
 
 | Ruta | Va a | Auth |
 |---|---|---|
-| `POST /api/auth/demo` | el propio gateway (firma el JWT) | pública |
+| `POST /api/auth/google` | el propio gateway: verifica el ID token de Google, booking guarda la cuenta y su rol, y firma el JWT | pública |
+| `POST /api/auth/demo` | el propio gateway: usuarios semilla para k6 y pruebas. Solo existe si `DEMO_LOGIN_KEY` está definida, y la pide en `x-demo-key` | llave |
 | `GET/POST/PATCH /api/places*` | `booking` | requiere token |
 | `* /api/reservations*` | `booking` | requiere token |
 | `* /api/events*` | `booking` | requiere token |
@@ -46,8 +47,8 @@ Levanta en `http://localhost:8080`. Sin `BOOKING_URL`/`PROMO_URL`/`GAME_URL` con
 ### Probar sin nada más levantado
 
 ```bash
-# login de un usuario semilla
-curl -X POST http://localhost:8080/api/auth/demo -H "Content-Type: application/json" -d '{"userId":"u1"}'
+# login de un usuario semilla (con DEMO_LOGIN_KEY=algo en el .env)
+curl -X POST http://localhost:8080/api/auth/demo -H "Content-Type: application/json" -H "x-demo-key: algo" -d '{"userId":"u1"}'
 # → { "token": "..." }
 
 # usar el token en una ruta protegida
@@ -63,6 +64,8 @@ Usuarios semilla válidos: `u1`–`u6` (rol `cliente`), `b1`, `b2`, `b3` (rol `n
 Ver [`.env.example`](.env.example). En producción (Railway):
 
 - `JWT_SECRET`: 32 caracteres o más; el **mismo valor** en `realtime` (`JWT_SECRET`) y en `game` (`JWT_SECRETO`).
+- `GOOGLE_CLIENT_ID`: el client ID de OAuth de Google (el mismo `NEXT_PUBLIC_GOOGLE_CLIENT_ID` del frontend). Sin él no se puede entrar.
+- `DEMO_LOGIN_KEY`: opcional. Solo si se van a correr k6 o las pruebas automáticas contra este entorno.
 - `BOOKING_URL` / `PROMO_URL` / `GAME_URL`: la URL **privada** de cada servicio (`http://planazo-booking.railway.internal:3001`, `http://planazo-promo.railway.internal:3002`, `http://planazo-game.railway.internal:8082`). Booking y promo no tienen dominio público.
 - `ALLOWED_ORIGINS`: `https://planazo-frontend.vercel.app,http://localhost:3000`. `RATE_LIMIT_PER_MINUTE=600` en producción.
 - `ANTHROPIC_API_KEY`: opcional. Sin ella, `/api/plan` responde con una plantilla simple en vez de llamar al modelo (así no bloquea a nadie mientras la consigues).

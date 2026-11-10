@@ -1,8 +1,8 @@
 import axios from 'axios';
 
 /**
- * Llamadas del gateway a booking en nombre de un usuario. Las usa el login
- * (¿este negocio ya tiene lugar?) y el alta de negocios (crear el lugar y
+ * Llamadas del gateway a booking. Las usa el login con Google (la cuenta y su
+ * rol; ¿este negocio ya tiene lugar?) y el alta de negocios (crear el lugar y
  * firmar un token nuevo que lo incluya).
  */
 
@@ -57,31 +57,39 @@ export async function createPlace(who: Who, body: unknown) {
   }
 }
 
-export interface Reclamo {
+export interface CuentaGoogle {
   ok: boolean;
   /** HTTP de booking; 0 si no respondió. */
   status: number;
   accountId?: string;
   name?: string;
+  role?: 'cliente' | 'negocio' | null;
   data?: unknown;
 }
 
 /**
- * Reserva el nombre para este navegador (booking lo guarda en
- * `booking.accounts`). `status: 0` es que booking no respondió.
+ * Busca o crea la cuenta de esta identidad de Google en booking (que la
+ * guarda en `booking.google_accounts`). `role` solo se guarda la primera vez;
+ * `role: null` en la respuesta es que la persona todavía no ha elegido.
+ * `status: 0` es que booking no respondió.
  */
-export async function claimAccount(name: string, deviceId: string): Promise<Reclamo> {
+export async function googleAccount(
+  id: { googleSub: string; email: string; name: string },
+  role?: 'cliente' | 'negocio',
+): Promise<CuentaGoogle> {
   try {
     const { data, status } = await axios.post(
-      `${bookingUrl()}/accounts/claim`,
-      { name, deviceId },
+      `${bookingUrl()}/accounts/google`,
+      { ...id, ...(role ? { role } : {}) },
       {
         headers: { 'content-type': 'application/json', 'x-gateway-key': process.env.GATEWAY_KEY ?? '' },
         timeout: 5_000,
         validateStatus: () => true,
       },
     );
-    if (status === 200 && data?.accountId) return { ok: true, status, accountId: String(data.accountId), name: String(data.name ?? name) };
+    if (status === 200 && data?.accountId) {
+      return { ok: true, status, accountId: String(data.accountId), name: String(data.name ?? id.name), role: data.role ?? null };
+    }
     return { ok: false, status, data };
   } catch {
     return { ok: false, status: 0 };
