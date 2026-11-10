@@ -1,14 +1,48 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, HttpException, Logger, Post, Req, ServiceUnavailableException, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  ConflictException,
+  Controller,
+  ForbiddenException,
+  Get,
+  Headers,
+  HttpCode,
+  HttpException,
+  Logger,
+  NotFoundException,
+  Post,
+  Req,
+  ServiceUnavailableException,
+  UnauthorizedException,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
-import { claimAccount, createPlace, ownedPlaceId, type Who } from './booking.client';
+import { timingSafeEqual } from 'node:crypto';
+import { createPlace, cuentaPorId, googleAccount, ownedPlaceId, registrarNegocio, type CuentaGoogle, type Who } from './booking.client';
+import { type GoogleIdentity, verificarGoogle } from './google';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { SEED_USERS, type Role } from './seed-users';
 
-/** Letras (con tildes), números, espacios y algo de puntuación; de 2 a 30 caracteres. */
-const NOMBRE = /^[\p{L}\p{N} .'\-_]{2,30}$/u;
-/** Identificador del dispositivo que genera el navegador y guarda en localStorage. */
-const DISPOSITIVO = /^[A-Za-z0-9]{8,40}$/;
+/** Un ID token de Google es un JWT de ~1 KB; se corta antes de mandarlo a verificar. */
+const MAX_CREDENCIAL = 4096;
+/** Para registrar un negocio, Google tiene que haber emitido el token hace menos de 10 minutos. */
+const EDAD_MAXIMA_REGISTRO_SEG = 600;
+/** El id de cuenta de Google va en el token como `c-<id>` o `n-<id>`. */
+const SUB_GOOGLE = /^[cn]-(g[A-Z2-9]{12})$/;
+
+type Modo = 'cliente' | 'negocio';
+
+/** Usuarios de prueba de /auth/demo: `qa-` y de 3 a 40 letras minúsculas, números o guiones. */
+const USUARIO_QA = /^qa-[a-z0-9-]{3,40}$/;
+const NOMBRE_QA = /^[\p{L}\p{N} .'\-_]{2,40}$/u;
+
+/** Compara la llave de /demo sin filtrar por tiempos cuánto de ella acertó quien llama. */
+function llaveValida(dada: string | undefined, esperada: string): boolean {
+  const a = Buffer.from(dada ?? '');
+  const b = Buffer.from(esperada);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 type AuthedRequest = Request & { user: Who & { exp: number } };
 
@@ -29,76 +63,172 @@ export class AuthController {
     });
   }
 
-  private session(who: Who) {
+  /** `negocio`: si la cuenta tiene el modo negocio activado (para mostrar «Cambiar a modo negocio»). */
+  private session(who: Who, negocio = who.role === 'negocio') {
     return {
       token: this.sign(who),
-      user: { id: who.sub, name: who.name, role: who.role, placeId: who.placeId ?? null },
+      user: { id: who.sub, name: who.name, role: who.role, placeId: who.placeId ?? null, negocio },
     };
   }
 
-  /**
-   * POST /api/auth/login { name, role, deviceId } → { token, user }
-   *
-   * Entra cualquiera escribiendo solo su nombre, y cada nombre es único: el
-   * primer navegador que lo usa se queda con él (booking lo guarda). Ese
-   * navegador vuelve a entrar con su nombre cuando quiera; otro recibe 409
-   * NOMBRE_EN_USO con una sugerencia («Juan 2»). Dos nombres en el mismo
-   * navegador son dos cuentas: nadie hereda el negocio de otro por compartir
-   * computador. El id del token es `c-<cuenta>` o `n-<cuenta>`; si es un
-   * negocio que ya creó su lugar, el token lo incluye.
-   */
-  @Post('login')
-  @HttpCode(200)
-  async login(@Body() body: { name?: string; role?: Role; deviceId?: string }) {
-    const name = String(body?.name ?? '').trim().replace(/\s+/g, ' ');
-    const role: Role = body?.role === 'negocio' ? 'negocio' : 'cliente';
-    const deviceId = String(body?.deviceId ?? '');
-
-    if (!NOMBRE.test(name)) {
-      throw new BadRequestException({
-        code: 'NOMBRE_INVALIDO',
-        message: 'Escribe un nombre de 2 a 30 letras (sin símbolos raros).',
-      });
-    }
-    if (!DISPOSITIVO.test(deviceId)) {
-      throw new BadRequestException({ code: 'DISPOSITIVO_INVALIDO', message: 'Falta el identificador del dispositivo.' });
-    }
-
-    // La cuenta la decide booking. Si no responde, se reintenta una vez y si
-    // sigue caído se pide reintentar: entrar «por navegador» mezclaría a dos
-    // personas que usan el mismo computador con nombres distintos.
-    let r = await claimAccount(name, deviceId);
-    if (!r.ok && r.status !== 409 && r.status !== 400) {
-      await new Promise((ok) => setTimeout(ok, 1_000));
-      r = await claimAccount(name, deviceId);
-    }
-    if (r.status === 409 || r.status === 400) throw new HttpException(r.data as object, r.status);
-    if (!r.ok || !r.accountId) {
-      this.logger.warn(`No se pudo reservar el nombre en booking (status ${r.status}).`);
-      throw new ServiceUnavailableException({
-        code: 'SERVICIO_NO_DISPONIBLE',
-        message: 'No pudimos verificar tu nombre en este momento. Intenta de nuevo en unos segundos.',
-      });
-    }
-    const cuenta = r.accountId;
-    const nombre = r.name ?? name;
-
-    const who: Who = { sub: `${role === 'negocio' ? 'n' : 'c'}-${cuenta}`, name: nombre, role };
-    if (role === 'negocio') {
+  /** Firma la sesión de una cuenta de Google en el modo pedido. El negocio incluye su lugar, si ya lo creó. */
+  private async sesionDeCuenta(cuenta: CuentaGoogle, modo: Modo, nombre: string) {
+    const who: Who = { sub: `${modo === 'negocio' ? 'n' : 'c'}-${cuenta.accountId}`, name: cuenta.name || nombre, role: modo };
+    if (modo === 'negocio') {
       const placeId = await ownedPlaceId(who);
       if (placeId) who.placeId = placeId;
     }
-    return this.session(who);
+    return this.session(who, cuenta.negocio === true);
   }
 
-  /** POST /api/auth/demo { userId } → { token }. Usuarios semilla: los usan k6 y las demos. */
-  @Post('demo')
-  demo(@Body('userId') userId: string) {
-    const user = SEED_USERS.find((u) => u.id === userId);
-    if (!user) {
-      throw new BadRequestException({ code: 'USUARIO_INVALIDO', message: 'Usuario semilla no encontrado.' });
+  /** Verifica la credencial de Google y traduce cada falla a una respuesta clara. */
+  private async identidad(credential: unknown, opciones: { maxEdadSeg?: number } = {}): Promise<GoogleIdentity> {
+    const cred = typeof credential === 'string' ? credential : '';
+    if (!cred || cred.length > MAX_CREDENCIAL) {
+      throw new BadRequestException({ code: 'CREDENCIAL_INVALIDA', message: 'Falta la credencial de Google.' });
     }
-    return { token: this.sign({ sub: user.id, name: user.name, role: user.role, placeId: user.placeId }) };
+    const v = await verificarGoogle(cred, opciones);
+    // `in` y no `!v.ok`: el proyecto compila sin strictNullChecks y así no se estrecha la unión.
+    if ('code' in v) {
+      if (v.code === 'SIN_CONFIGURAR') {
+        this.logger.error('Falta GOOGLE_CLIENT_ID: no se puede verificar el inicio de sesión con Google.');
+        throw new ServiceUnavailableException({ code: 'GOOGLE_NO_CONFIGURADO', message: 'El inicio de sesión no está disponible en este momento.' });
+      }
+      const mensaje: Record<string, string> = {
+        CORREO_NO_VERIFICADO: 'Tu cuenta de Google no tiene el correo verificado.',
+        CREDENCIAL_VIEJA: 'Por seguridad, vuelve a confirmar con Google para registrar tu negocio.',
+        CREDENCIAL_INVALIDA: 'No pudimos verificar tu cuenta de Google. Intenta de nuevo.',
+      };
+      throw new UnauthorizedException({ code: v.code, message: mensaje[v.code] });
+    }
+    return v.id;
+  }
+
+  /** La cuenta en booking. Si booking no responde se reintenta una vez. */
+  private async cuenta(id: GoogleIdentity): Promise<CuentaGoogle> {
+    const datos = { googleSub: id.sub, email: id.email, name: id.name };
+    let r = await googleAccount(datos);
+    if (!r.ok && r.status !== 400) {
+      await new Promise((ok) => setTimeout(ok, 1_000));
+      r = await googleAccount(datos);
+    }
+    if (r.status === 400) throw new HttpException(r.data as object, 400);
+    if (!r.ok || !r.accountId) {
+      this.logger.warn(`No se pudo leer la cuenta de Google en booking (status ${r.status}).`);
+      throw new ServiceUnavailableException({
+        code: 'SERVICIO_NO_DISPONIBLE',
+        message: 'No pudimos abrir tu cuenta en este momento. Intenta de nuevo en unos segundos.',
+      });
+    }
+    return r;
+  }
+
+  /**
+   * POST /api/auth/google { credential, modo? } → { token, user }
+   *
+   * Se entra únicamente con Google. El navegador manda el ID token que le dio
+   * «Iniciar sesión con Google» y aquí se verifica (firma, emisor, audiencia,
+   * expiración y correo verificado). booking guarda la cuenta por el `sub` de
+   * Google. Toda cuenta puede entrar en modo cliente. En modo negocio solo si
+   * ya registró su negocio; si no, 409 NEGOCIO_NO_REGISTRADO y el navegador
+   * muestra el registro. El modo lo decide el servidor con lo guardado.
+   */
+  @Post('google')
+  @HttpCode(200)
+  async google(@Body() body: { credential?: unknown; modo?: unknown }) {
+    if (body?.modo !== undefined && body.modo !== 'cliente' && body.modo !== 'negocio') {
+      throw new BadRequestException({ code: 'MODO_INVALIDO', message: 'El modo debe ser cliente o negocio.' });
+    }
+    const id = await this.identidad(body?.credential);
+    const cuenta = await this.cuenta(id);
+    if (body?.modo === 'negocio' && !cuenta.negocio) {
+      throw new ConflictException({ code: 'NEGOCIO_NO_REGISTRADO', message: 'Registra tu negocio para entrar al panel.', name: cuenta.name });
+    }
+    return this.sesionDeCuenta(cuenta, body?.modo === 'negocio' ? 'negocio' : 'cliente', id.name);
+  }
+
+  /**
+   * POST /api/auth/negocio/registro { credential, legalName, nit, phone, acceptTerms } → { token, user }
+   *
+   * Activa el modo negocio. Es una acción sensible, así que pide confirmar
+   * con Google otra vez: el token debe tener menos de 10 minutos. booking
+   * valida los datos (NIT con dígito de verificación, teléfono, términos) y
+   * que el NIT no esté en otra cuenta. Responde ya en modo negocio.
+   */
+  @Post('negocio/registro')
+  @HttpCode(200)
+  async registrarNegocio(@Body() body: { credential?: unknown; legalName?: unknown; nit?: unknown; phone?: unknown; acceptTerms?: unknown }) {
+    const id = await this.identidad(body?.credential, { maxEdadSeg: EDAD_MAXIMA_REGISTRO_SEG });
+    const cuenta = await this.cuenta(id);
+    const r = await registrarNegocio(cuenta.accountId!, {
+      legalName: body?.legalName,
+      nit: body?.nit,
+      phone: body?.phone,
+      acceptTerms: body?.acceptTerms,
+    });
+    if (!r.ok) {
+      if (r.status >= 400 && r.status < 500) throw new HttpException(r.data as object, r.status);
+      throw new ServiceUnavailableException({ code: 'SERVICIO_NO_DISPONIBLE', message: 'No pudimos registrar tu negocio. Intenta de nuevo.' });
+    }
+    this.logger.log(`Modo negocio activado para la cuenta ${cuenta.accountId}.`);
+    return this.sesionDeCuenta({ ...cuenta, negocio: true }, 'negocio', id.name);
+  }
+
+  /**
+   * POST /api/auth/modo { modo } → { token, user }
+   *
+   * Cambia entre modo cliente y modo negocio sin volver a pasar por Google.
+   * A cliente puede pasar cualquiera; a negocio solo una cuenta que lo tenga
+   * activado (lo pregunta a booking, no se fía del token anterior).
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('modo')
+  @HttpCode(200)
+  async cambiarModo(@Req() req: AuthedRequest, @Body('modo') modo: unknown) {
+    if (modo !== 'cliente' && modo !== 'negocio') {
+      throw new BadRequestException({ code: 'MODO_INVALIDO', message: 'El modo debe ser cliente o negocio.' });
+    }
+    const accountId = SUB_GOOGLE.exec(req.user.sub)?.[1];
+    if (!accountId) throw new ForbiddenException({ code: 'SIN_CUENTA_GOOGLE', message: 'Esta sesión no puede cambiar de modo.' });
+    const cuenta = await cuentaPorId(accountId);
+    if (!cuenta.ok) {
+      if (cuenta.status === 404) throw new ForbiddenException({ code: 'SIN_CUENTA_GOOGLE', message: 'Esta sesión no puede cambiar de modo.' });
+      throw new ServiceUnavailableException({ code: 'SERVICIO_NO_DISPONIBLE', message: 'No pudimos cambiar de modo. Intenta de nuevo.' });
+    }
+    if (modo === 'negocio' && !cuenta.negocio) {
+      throw new ForbiddenException({ code: 'NEGOCIO_NO_REGISTRADO', message: 'Primero registra tu negocio.' });
+    }
+    return this.sesionDeCuenta(cuenta, modo, req.user.name);
+  }
+
+  /**
+   * POST /api/auth/demo { userId, name?, role? } → { token, user }. Para k6 y
+   * las pruebas automáticas. Como el único login es Google, esta puerta solo
+   * existe si DEMO_LOGIN_KEY está definida, y exige esa llave en `x-demo-key`.
+   *
+   * `userId` es un usuario semilla (`u1`…`u6`, `b1`…`b3`) o un usuario de
+   * prueba `qa-<algo>`: las pruebas de concurrencia necesitan muchas personas
+   * distintas y ya no se pueden crear por nombre. El de prueba queda como
+   * `c-qa-…` o `n-qa-…`, sin cuenta de Google.
+   */
+  @Post('demo')
+  demo(@Body() body: { userId?: unknown; name?: unknown; role?: unknown }, @Headers('x-demo-key') llave?: string) {
+    const esperada = process.env.DEMO_LOGIN_KEY;
+    if (!esperada) throw new NotFoundException({ code: 'NO_ENCONTRADO', message: 'Ruta no encontrada.' });
+    if (!llaveValida(llave, esperada)) throw new UnauthorizedException({ code: 'LLAVE_DEMO_INVALIDA', message: 'Llave de demo inválida.' });
+    const userId = String(body?.userId ?? '');
+    const semilla = SEED_USERS.find((u) => u.id === userId);
+    let who: Who;
+    if (semilla) {
+      who = { sub: semilla.id, name: semilla.name, role: semilla.role, placeId: semilla.placeId };
+    } else if (USUARIO_QA.test(userId)) {
+      const role: Role = body?.role === 'negocio' ? 'negocio' : 'cliente';
+      const nombre = typeof body?.name === 'string' && NOMBRE_QA.test(body.name.trim()) ? body.name.trim() : userId;
+      who = { sub: `${role === 'negocio' ? 'n' : 'c'}-${userId}`, name: nombre, role };
+    } else {
+      throw new BadRequestException({ code: 'USUARIO_INVALIDO', message: 'Usuario semilla o de prueba (qa-…) no válido.' });
+    }
+    return { token: this.sign(who), user: this.session(who).user };
   }
 
   /** GET /api/auth/me → los datos del token vigente, o 401 si falta o expiró. */
