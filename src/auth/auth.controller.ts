@@ -33,6 +33,10 @@ const SUB_GOOGLE = /^[cn]-(g[A-Z2-9]{12})$/;
 
 type Modo = 'cliente' | 'negocio';
 
+/** Usuarios de prueba de /auth/demo: `qa-` y de 3 a 40 letras minúsculas, números o guiones. */
+const USUARIO_QA = /^qa-[a-z0-9-]{3,40}$/;
+const NOMBRE_QA = /^[\p{L}\p{N} .'\-_]{2,40}$/u;
+
 /** Compara la llave de /demo sin filtrar por tiempos cuánto de ella acertó quien llama. */
 function llaveValida(dada: string | undefined, esperada: string): boolean {
   const a = Buffer.from(dada ?? '');
@@ -198,20 +202,33 @@ export class AuthController {
   }
 
   /**
-   * POST /api/auth/demo { userId } → { token }. Usuarios semilla para k6 y las
-   * pruebas automáticas. Como el único login es Google, esta puerta solo
+   * POST /api/auth/demo { userId, name?, role? } → { token, user }. Para k6 y
+   * las pruebas automáticas. Como el único login es Google, esta puerta solo
    * existe si DEMO_LOGIN_KEY está definida, y exige esa llave en `x-demo-key`.
+   *
+   * `userId` es un usuario semilla (`u1`…`u6`, `b1`…`b3`) o un usuario de
+   * prueba `qa-<algo>`: las pruebas de concurrencia necesitan muchas personas
+   * distintas y ya no se pueden crear por nombre. El de prueba queda como
+   * `c-qa-…` o `n-qa-…`, sin cuenta de Google.
    */
   @Post('demo')
-  demo(@Body('userId') userId: string, @Headers('x-demo-key') llave?: string) {
+  demo(@Body() body: { userId?: unknown; name?: unknown; role?: unknown }, @Headers('x-demo-key') llave?: string) {
     const esperada = process.env.DEMO_LOGIN_KEY;
     if (!esperada) throw new NotFoundException({ code: 'NO_ENCONTRADO', message: 'Ruta no encontrada.' });
     if (!llaveValida(llave, esperada)) throw new UnauthorizedException({ code: 'LLAVE_DEMO_INVALIDA', message: 'Llave de demo inválida.' });
-    const user = SEED_USERS.find((u) => u.id === userId);
-    if (!user) {
-      throw new BadRequestException({ code: 'USUARIO_INVALIDO', message: 'Usuario semilla no encontrado.' });
+    const userId = String(body?.userId ?? '');
+    const semilla = SEED_USERS.find((u) => u.id === userId);
+    let who: Who;
+    if (semilla) {
+      who = { sub: semilla.id, name: semilla.name, role: semilla.role, placeId: semilla.placeId };
+    } else if (USUARIO_QA.test(userId)) {
+      const role: Role = body?.role === 'negocio' ? 'negocio' : 'cliente';
+      const nombre = typeof body?.name === 'string' && NOMBRE_QA.test(body.name.trim()) ? body.name.trim() : userId;
+      who = { sub: `${role === 'negocio' ? 'n' : 'c'}-${userId}`, name: nombre, role };
+    } else {
+      throw new BadRequestException({ code: 'USUARIO_INVALIDO', message: 'Usuario semilla o de prueba (qa-…) no válido.' });
     }
-    return { token: this.sign({ sub: user.id, name: user.name, role: user.role, placeId: user.placeId }) };
+    return { token: this.sign(who), user: this.session(who).user };
   }
 
   /** GET /api/auth/me → los datos del token vigente, o 401 si falta o expiró. */

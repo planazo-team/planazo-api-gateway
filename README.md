@@ -22,7 +22,7 @@
 | `POST /api/auth/google` | el propio gateway: verifica el ID token de Google, booking guarda la cuenta y firma el JWT. `modo: "negocio"` solo si la cuenta registró su negocio (si no, `409 NEGOCIO_NO_REGISTRADO`) | pública |
 | `POST /api/auth/negocio/registro` | el propio gateway: activa el modo negocio. Pide un token de Google de menos de 10 minutos; booking valida razón social, NIT con dígito de verificación, teléfono y términos, y que el NIT no esté en otra cuenta | pública (con Google) |
 | `POST /api/auth/modo` | el propio gateway: cambia entre modo cliente y negocio (negocio solo si la cuenta lo tiene activado) | requiere token |
-| `POST /api/auth/demo` | el propio gateway: usuarios semilla para k6 y pruebas. Solo existe si `DEMO_LOGIN_KEY` está definida, y la pide en `x-demo-key` | llave |
+| `POST /api/auth/demo` | el propio gateway: usuarios semilla (`u1`…`b3`) o de prueba (`qa-…`) para k6 y las pruebas automáticas. Solo existe si `DEMO_LOGIN_KEY` está definida, y la pide en `x-demo-key` | llave |
 | `GET/POST/PATCH /api/places*` | `booking` | requiere token |
 | `* /api/reservations*` | `booking` | requiere token |
 | `* /api/events*` | `booking` | requiere token |
