@@ -1,5 +1,6 @@
-import axios from 'axios';
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
 import type { Request, Response } from 'express';
+import CircuitBreaker from 'opossum';
 
 interface GatewayUser {
   sub: string;
@@ -8,8 +9,8 @@ interface GatewayUser {
   placeId?: string;
 }
 
-/** Cuánto se espera a un servicio antes de responder 502. */
-const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS ?? 10_000);
+/** Cuánto se espera a un servicio antes de considerar fallo (ESC-04). */
+const UPSTREAM_TIMEOUT_MS = Number(process.env.UPSTREAM_TIMEOUT_MS ?? 5_000);
 
 export interface ForwardOptions {
   /** Prefijo que el servicio pone a sus rutas, p. ej. `/api/v1` en game (Java). */
@@ -21,15 +22,46 @@ export interface ForwardOptions {
   passToken?: boolean;
 }
 
+/** Mapa de circuit breakers por URL base del servicio. */
+export const breakers = new Map<string, CircuitBreaker<[AxiosRequestConfig], AxiosResponse>>();
+
+/** Obtiene o inicializa el circuit breaker para el servicio destino (ESC-04 Disponibilidad). */
+export function getCircuitBreaker(base: string): CircuitBreaker<[AxiosRequestConfig], AxiosResponse> {
+  let breaker = breakers.get(base);
+  if (!breaker) {
+    const breakerOptions: CircuitBreaker.Options = {
+      timeout: UPSTREAM_TIMEOUT_MS,
+      errorThresholdPercentage: 50,
+      resetTimeout: 10_000,
+      rollingCountTimeout: 10_000,
+    };
+
+    breaker = new CircuitBreaker(async (cfg: AxiosRequestConfig) => {
+      const isGet = (cfg.method ?? 'GET').toString().toUpperCase() === 'GET';
+      const maxAttempts = isGet ? 2 : 1;
+      let lastErr: unknown;
+
+      for (let intento = 1; intento <= maxAttempts; intento++) {
+        try {
+          return await axios.request(cfg);
+        } catch (err) {
+          lastErr = err;
+          if (intento < maxAttempts) {
+            await new Promise((ok) => setTimeout(ok, intento * 150));
+          }
+        }
+      }
+      throw lastErr;
+    }, breakerOptions);
+
+    breakers.set(base, breaker);
+  }
+  return breaker;
+}
+
 /**
- * Reenvía la petición al servicio dueño de la ruta, quitando el prefijo /api
- * (booking/promo exponen sus rutas sin ese prefijo) y pasando quién es
- * el usuario en headers, ya verificado por el gateway.
- *
- * Seguridad: los headers `x-user-*` los pone SIEMPRE el gateway a partir del JWT;
- * lo que haya mandado el cliente con ese nombre se descarta. Además viaja
- * `x-gateway-key`, un secreto compartido con los servicios, para que ninguno
- * acepte peticiones que no vengan de aquí aunque su URL sea pública.
+ * Reenvía la petición al servicio dueño de la ruta con Circuit Breaker (opossum)
+ * y reintentos automáticos para operaciones GET idempotentes (ESC-04).
  */
 export async function forward(base: string, req: Request, res: Response, opts: ForwardOptions = {}) {
   const path = req.originalUrl.replace(/^\/api/, '');
@@ -37,29 +69,34 @@ export async function forward(base: string, req: Request, res: Response, opts: F
   const user = (req as Request & { user?: GatewayUser }).user;
   const token = opts.passToken && req.headers.authorization ? { authorization: req.headers.authorization } : {};
 
+  const config: AxiosRequestConfig = {
+    method: req.method as any,
+    url,
+    data: req.body,
+    timeout: UPSTREAM_TIMEOUT_MS,
+    headers: {
+      'content-type': 'application/json',
+      'x-user-id': user?.sub ?? '',
+      'x-user-name': encodeURIComponent(user?.name ?? ''),
+      'x-user-role': user?.role ?? '',
+      'x-user-place-id': user?.placeId ?? '',
+      'x-gateway-key': process.env.GATEWAY_KEY ?? '',
+      'x-correlation-id': (req.headers['x-correlation-id'] as string) ?? (req.headers['x-request-id'] as string) ?? cryptoRandomId(),
+      'x-request-id': (req.headers['x-request-id'] as string) ?? cryptoRandomId(),
+      ...token,
+    },
+    validateStatus: () => true,
+  };
+
+  const breaker = getCircuitBreaker(base);
+
   try {
-    const upstream = await axios.request({
-      method: req.method as any,
-      url,
-      data: req.body,
-      timeout: UPSTREAM_TIMEOUT_MS,
-      headers: {
-        'content-type': 'application/json',
-        'x-user-id': user?.sub ?? '',
-        'x-user-name': encodeURIComponent(user?.name ?? ''),
-        'x-user-role': user?.role ?? '',
-        'x-user-place-id': user?.placeId ?? '',
-        'x-gateway-key': process.env.GATEWAY_KEY ?? '',
-        'x-request-id': (req.headers['x-request-id'] as string) ?? cryptoRandomId(),
-        ...token,
-      },
-      validateStatus: () => true,
-    });
+    const upstream = await breaker.fire(config);
     res.status(upstream.status).json(upstream.data);
-  } catch {
-    res.status(502).json({
+  } catch (_err) {
+    res.status(503).json({
       code: 'SERVICIO_NO_DISPONIBLE',
-      message: `No se pudo contactar el servicio (${base}).`,
+      message: `El servicio ${base} no está disponible en este momento.`,
     });
   }
 }

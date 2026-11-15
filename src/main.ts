@@ -3,6 +3,8 @@ import { NestFactory } from '@nestjs/core';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import { AppModule } from './app.module';
+import { AttackDetector } from './security/attack-detector';
+import { auditLogService } from './security/audit';
 
 /**
  * Orígenes que pueden llamar al gateway desde un navegador.
@@ -35,6 +37,11 @@ async function bootstrap() {
 
   app.enableCors({ origin: allowedOrigins(), credentials: true });
   app.use(helmet());
+
+  const attackDetector = new AttackDetector();
+  app.use(attackDetector.middleware());
+  app.use(auditLogService.middleware());
+
   app.use(
     rateLimit({
       windowMs: 60_000,
