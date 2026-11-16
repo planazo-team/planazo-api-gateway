@@ -1,6 +1,7 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
+import { registrarActividad } from '../observability/metrics';
 
 /** Exige un JWT válido en `Authorization: Bearer <token>` y lo deja en `req.user`. */
 @Injectable()
@@ -17,7 +18,9 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     try {
-      (req as Request & { user: unknown }).user = this.jwt.verify(token);
+      const user = this.jwt.verify<{ sub?: string }>(token);
+      (req as Request & { user: unknown }).user = user;
+      if (user?.sub) registrarActividad(user.sub);
       return true;
     } catch {
       throw new UnauthorizedException({ code: 'TOKEN_INVALIDO', message: 'Token inválido o expirado.' });

@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 import type { NextFunction, Request, Response } from 'express';
 import Redis from 'ioredis';
+import { ataquesDetectados } from '../observability/metrics';
 
 const logger = new Logger('AttackDetector');
 
@@ -88,7 +89,9 @@ export class AttackDetector {
           logger.warn(
             `[ALERTA_SEGURIDAD] Ataque detectado: IP ${ip} bloqueada por ${this.bloqueo / 60} minutos tras registrar ${total} errores 401/429 en 1 minuto.`,
           );
-          return { bloqueada: true, total };
+          ataquesDetectados.inc();
+          ataquesDetectados.inc();
+      return { bloqueada: true, total };
         }
         return { bloqueada: false, total };
       } catch {
@@ -111,6 +114,7 @@ export class AttackDetector {
       logger.warn(
         `[ALERTA_SEGURIDAD] Ataque detectado: IP ${ip} bloqueada por ${this.bloqueo / 60} minutos tras registrar ${total} errores 401/429 en 1 minuto.`,
       );
+      ataquesDetectados.inc();
       return { bloqueada: true, total };
     }
 
