@@ -17,5 +17,24 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
+
+      # Escaneo de mantenibilidad (duplicación, code smells). Este repo
+      # todavía no tiene pruebas (sin `test`/`jest` en package.json), así
+      # que la cobertura saldrá en 0% hasta que se agreguen — eso es un
+      # trabajo aparte, no algo que resuelva este paso. No falla el build
+      # si el secret no está configurado: falta crear el proyecto en
+      # SonarCloud y guardar SONAR_TOKEN (y opcionalmente
+      # SONAR_ORGANIZATION / SONAR_PROJECT_KEY) como secret del repo.
+      - name: SonarCloud
+        if: ${{ secrets.SONAR_TOKEN != '' }}
+        uses: SonarSource/sonarqube-scan-action@v4
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }}
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY || 'planazo-api-gateway' }}
+
       - run: npm run build
       - run: docker build -t planazo-api-gateway:ci .
