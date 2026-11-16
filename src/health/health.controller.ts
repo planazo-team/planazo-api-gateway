@@ -42,6 +42,40 @@ export async function sondear(servicio: string, url: string, timeoutMs = TIMEOUT
   }
 }
 
+export interface EstadoBalanceador {
+  servicio: string;
+  lb: string;
+  algoritmo: string;
+  backends: { id: string; sano: boolean; activas: number; atendidas: number; errores: number; motivo: string | null }[];
+}
+
+/**
+ * Si delante del servicio hay un balanceador nuestro (planazo-balancer), trae su
+ * estado de /__lb/status. Si no lo hay (o no responde), devuelve null.
+ */
+export async function estadoBalanceador(servicio: string, base: string, timeoutMs = 1000): Promise<EstadoBalanceador | null> {
+  try {
+    const r = await axios.get(`${base}/__lb/status`, { timeout: timeoutMs, httpAgent: agente, validateStatus: () => true });
+    const d = r.data as Partial<EstadoBalanceador> & { backends?: unknown };
+    if (r.status !== 200 || typeof d?.lb !== 'string' || !Array.isArray(d.backends)) return null;
+    return {
+      servicio,
+      lb: d.lb,
+      algoritmo: String(d.algoritmo ?? ''),
+      backends: (d.backends as EstadoBalanceador['backends']).map((b) => ({
+        id: String(b.id),
+        sano: Boolean(b.sano),
+        activas: Number(b.activas) || 0,
+        atendidas: Number(b.atendidas) || 0,
+        errores: Number(b.errores) || 0,
+        motivo: b.motivo ?? null,
+      })),
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** GET /api/health — sin token. Lo usan Railway, el docker-compose de planazo-infra y status.sh. */
 @Controller('health')
 export class HealthController {
@@ -70,6 +104,9 @@ export class HealthController {
       sondear('promo', `${u.promo}/health`),
       sondear('game', `${u.game}/actuator/health`),
     ]);
-    return { gateway: SERVIDO_POR, at: Date.now(), servicios };
+    const balanceadores = (
+      await Promise.all([estadoBalanceador('booking', u.booking), estadoBalanceador('promo', u.promo)])
+    ).filter((b): b is EstadoBalanceador => b !== null);
+    return { gateway: SERVIDO_POR, at: Date.now(), servicios, balanceadores };
   }
 }

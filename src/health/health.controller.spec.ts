@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { HealthController, sondear } from './health.controller';
+import { estadoBalanceador, HealthController, sondear } from './health.controller';
 
 jest.mock('axios');
 const get = axios.get as jest.MockedFunction<typeof axios.get>;
@@ -40,12 +40,36 @@ describe('HealthController', () => {
     expect(e).toMatchObject({ servicio: 'game', ok: false, status: null, replica: null });
   });
 
+  it('estadoBalanceador lee /__lb/status de nuestro balanceador y descarta lo que no lo es', async () => {
+    get.mockResolvedValueOnce({
+      status: 200,
+      headers: {},
+      data: { lb: 'lb-booking', algoritmo: 'round-robin', backends: [{ id: 'booking-a', sano: true, activas: 1, atendidas: 9, errores: 0, motivo: null }] },
+    });
+    const e = await estadoBalanceador('booking', 'http://lb-booking:8080');
+    expect(e).toEqual({
+      servicio: 'booking',
+      lb: 'lb-booking',
+      algoritmo: 'round-robin',
+      backends: [{ id: 'booking-a', sano: true, activas: 1, atendidas: 9, errores: 0, motivo: null }],
+    });
+    get.mockResolvedValueOnce({ status: 404, headers: {}, data: {} });
+    expect(await estadoBalanceador('promo', 'http://promo:3002')).toBeNull();
+    get.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    expect(await estadoBalanceador('promo', 'http://promo:3002')).toBeNull();
+  });
+
   it('cluster informa la réplica del gateway y el estado de cada servicio', async () => {
-    get
-      .mockResolvedValueOnce({ status: 200, headers: { 'x-served-by': 'booking@r1' }, data: {} })
-      .mockResolvedValueOnce({ status: 503, headers: {}, data: {} })
-      .mockResolvedValueOnce({ status: 200, headers: {}, data: { status: 'UP' } });
+    get.mockImplementation(async (url: string) => {
+      if (url.endsWith('/__lb/status')) return { status: 404, headers: {}, data: {} };
+      if (url.includes('booking')) return { status: 200, headers: { 'x-served-by': 'booking@r1' }, data: {} };
+      if (url.includes('promo')) return { status: 503, headers: {}, data: {} };
+      return { status: 200, headers: {}, data: { status: 'UP' } };
+    });
+    process.env.BOOKING_URL = 'http://booking:3001';
+    process.env.PROMO_URL = 'http://promo:3002';
     const res = await controller.cluster();
+    expect(res.balanceadores).toEqual([]);
     expect(res.gateway).toMatch(/^api-gateway@/);
     expect(res.servicios.map((s) => [s.servicio, s.ok])).toEqual([
       ['booking', true],
