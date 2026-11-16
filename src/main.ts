@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { accessLog } from './observability/access-log';
+import { medirHttp, servidorDeMetricas } from './observability/metrics';
 import { AttackDetector } from './security/attack-detector';
 import { auditLogService } from './security/audit';
 
@@ -43,6 +44,7 @@ async function bootstrap() {
   app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1));
 
   app.use(accessLog());
+  app.use(medirHttp());
   app.enableCors({
     origin: allowedOrigins(),
     credentials: true,
@@ -67,6 +69,7 @@ async function bootstrap() {
 
   const port = process.env.PORT ?? 8080;
   await app.listen(port);
+  servidorDeMetricas();
   console.log(`api-gateway escuchando en :${port}`);
 }
 bootstrap().catch((err: unknown) => {

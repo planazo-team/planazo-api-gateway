@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { Injectable, Logger } from '@nestjs/common';
 import axios from 'axios';
+import { consultasAgente } from '../observability/metrics';
 
 /**
  * Forma que espera el frontend (PlanResult en planazo-frontend/frontend/src/lib/types.ts).
@@ -79,6 +80,12 @@ export class PlanService {
     : null;
 
   async buildPlan(text: string): Promise<PlanResult> {
+    const plan = await this.armarPlan(text);
+    consultasAgente.inc({ fuente: plan.source });
+    return plan;
+  }
+
+  private async armarPlan(text: string): Promise<PlanResult> {
     const places = await this.fetchCatalog();
 
     if (!this.client) {
