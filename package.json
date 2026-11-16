@@ -22,13 +22,24 @@
     "collectCoverageFrom": [
       "**/*.ts",
       "!**/*.spec.ts",
-      "!main.ts"
+      "!main.ts",
+      "!**/*.module.ts"
     ],
     "coverageDirectory": "../coverage",
     "coverageReporters": [
       "text-summary",
       "lcov"
-    ]
+    ],
+    "transform": {
+      "^.+.ts$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "importHelpers": true
+          }
+        }
+      ]
+    }
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.137.0",
