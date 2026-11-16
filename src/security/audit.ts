@@ -57,6 +57,9 @@ export class AuditLogService {
     if (m === 'POST' && cleanPath === '/api/auth/modo') {
       return 'CAMBIO_MODO';
     }
+    if (m === 'POST' && cleanPath === '/api/auth/2fa/confirmar') {
+      return 'ACTIVAR_2FA';
+    }
     if (m === 'POST' && (cleanPath === '/api/auth/negocio' || cleanPath === '/api/places')) {
       return 'CREAR_LUGAR';
     }

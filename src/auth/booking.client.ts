@@ -65,6 +65,8 @@ export interface CuentaGoogle {
   name?: string;
   /** Si la cuenta ya activó el modo negocio. */
   negocio?: boolean;
+  /** Si la cuenta tiene activa la verificación en dos pasos (se pide para entrar en modo negocio). */
+  dosPasos?: boolean;
   data?: unknown;
 }
 
@@ -81,7 +83,15 @@ async function pedir(method: 'get' | 'post', path: string, body?: unknown): Prom
       validateStatus: () => true,
     });
     if (status === 200 && data?.accountId) {
-      return { ok: true, status, accountId: String(data.accountId), name: data.name, negocio: data.negocio === true, data };
+      return {
+        ok: true,
+        status,
+        accountId: String(data.accountId),
+        name: data.name,
+        negocio: data.negocio === true,
+        dosPasos: data.dosPasos === true,
+        data,
+      };
     }
     return { ok: false, status, data };
   } catch {
@@ -108,4 +118,37 @@ export function registrarNegocio(
   datos: { legalName: unknown; nit: unknown; phone: unknown; acceptTerms: unknown },
 ): Promise<CuentaGoogle> {
   return pedir('post', `/accounts/${encodeURIComponent(accountId)}/negocio`, datos);
+}
+
+export interface RespuestaBooking {
+  ok: boolean;
+  /** HTTP de booking; 0 si no respondió. */
+  status: number;
+  data?: unknown;
+}
+
+/**
+ * Verificación en dos pasos (TOTP) en booking: `estado` (GET), `iniciar`
+ * (secreto nuevo para el QR), `confirmar` (el primer código la activa) y
+ * `verificar` (código para entrar en modo negocio).
+ */
+export async function dosPasos(
+  accountId: string,
+  accion: 'estado' | 'iniciar' | 'confirmar' | 'verificar',
+  codigo?: unknown,
+): Promise<RespuestaBooking> {
+  const ruta = `/accounts/${encodeURIComponent(accountId)}/2fa${accion === 'estado' ? '' : `/${accion}`}`;
+  try {
+    const { data, status } = await axios.request({
+      method: accion === 'estado' ? 'get' : 'post',
+      url: `${bookingUrl()}${ruta}`,
+      data: accion === 'confirmar' || accion === 'verificar' ? { codigo } : undefined,
+      headers: internos(),
+      timeout: 5_000,
+      validateStatus: () => true,
+    });
+    return { ok: status >= 200 && status < 300, status, data };
+  } catch {
+    return { ok: false, status: 0 };
+  }
 }

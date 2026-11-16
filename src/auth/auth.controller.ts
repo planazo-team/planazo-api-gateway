@@ -19,7 +19,7 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
 import { timingSafeEqual } from 'node:crypto';
-import { createPlace, cuentaPorId, googleAccount, ownedPlaceId, registrarNegocio, type CuentaGoogle, type Who } from './booking.client';
+import { createPlace, cuentaPorId, dosPasos, googleAccount, ownedPlaceId, registrarNegocio, type CuentaGoogle, type Who } from './booking.client';
 import { type GoogleIdentity, verificarGoogle } from './google';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { SEED_USERS, type Role } from './seed-users';
@@ -81,6 +81,37 @@ export class AuthController {
     return this.session(who, cuenta.negocio === true);
   }
 
+  /**
+   * Segundo paso para entrar en modo negocio (ESC-01, autenticación multifactor).
+   * Si la cuenta tiene la verificación en dos pasos activa, exige el código de
+   * 6 dígitos de su app autenticadora y lo verifica en booking (que guarda el
+   * secreto cifrado, no acepta un código dos veces y bloquea tras 5 fallos).
+   */
+  private async exigirSegundoPaso(cuenta: CuentaGoogle, codigo: unknown) {
+    if (!cuenta.dosPasos) return;
+    if (typeof codigo !== 'string' || !codigo.trim()) {
+      throw new UnauthorizedException({ code: '2FA_REQUERIDO', message: 'Escribe el código de 6 dígitos de tu app autenticadora.' });
+    }
+    const r = await dosPasos(cuenta.accountId!, 'verificar', codigo);
+    if (r.ok) return;
+    if (r.status >= 400 && r.status < 500) throw new HttpException(r.data as object, r.status);
+    throw new ServiceUnavailableException({ code: 'SERVICIO_NO_DISPONIBLE', message: 'No pudimos verificar el código. Intenta de nuevo.' });
+  }
+
+  /** El id de cuenta de Google de la sesión, o 403 si la sesión no es de una cuenta de Google. */
+  private cuentaDeSesion(req: AuthedRequest): string {
+    const accountId = SUB_GOOGLE.exec(req.user.sub)?.[1];
+    if (!accountId) throw new ForbiddenException({ code: 'SIN_CUENTA_GOOGLE', message: 'Esta sesión no tiene una cuenta de Google.' });
+    return accountId;
+  }
+
+  /** Reenvía la respuesta de booking: 2xx tal cual, 4xx como error, y si no respondió, 503. */
+  private reenviar(r: { ok: boolean; status: number; data?: unknown }) {
+    if (r.ok) return r.data;
+    if (r.status >= 400 && r.status < 500) throw new HttpException(r.data as object, r.status);
+    throw new ServiceUnavailableException({ code: 'SERVICIO_NO_DISPONIBLE', message: 'No pudimos completar la operación. Intenta de nuevo.' });
+  }
+
   /** Verifica la credencial de Google y traduce cada falla a una respuesta clara. */
   private async identidad(credential: unknown, opciones: { maxEdadSeg?: number } = {}): Promise<GoogleIdentity> {
     const cred = typeof credential === 'string' ? credential : '';
@@ -135,7 +166,7 @@ export class AuthController {
    */
   @Post('google')
   @HttpCode(200)
-  async google(@Body() body: { credential?: unknown; modo?: unknown }) {
+  async google(@Body() body: { credential?: unknown; modo?: unknown; codigo?: unknown }) {
     if (body?.modo !== undefined && body.modo !== 'cliente' && body.modo !== 'negocio') {
       throw new BadRequestException({ code: 'MODO_INVALIDO', message: 'El modo debe ser cliente o negocio.' });
     }
@@ -144,6 +175,7 @@ export class AuthController {
     if (body?.modo === 'negocio' && !cuenta.negocio) {
       throw new ConflictException({ code: 'NEGOCIO_NO_REGISTRADO', message: 'Registra tu negocio para entrar al panel.', name: cuenta.name });
     }
+    if (body?.modo === 'negocio') await this.exigirSegundoPaso(cuenta, body?.codigo);
     return this.sesionDeCuenta(cuenta, body?.modo === 'negocio' ? 'negocio' : 'cliente', id.name);
   }
 
@@ -184,7 +216,7 @@ export class AuthController {
   @UseGuards(JwtAuthGuard)
   @Post('modo')
   @HttpCode(200)
-  async cambiarModo(@Req() req: AuthedRequest, @Body('modo') modo: unknown) {
+  async cambiarModo(@Req() req: AuthedRequest, @Body('modo') modo: unknown, @Body('codigo') codigo?: unknown) {
     if (modo !== 'cliente' && modo !== 'negocio') {
       throw new BadRequestException({ code: 'MODO_INVALIDO', message: 'El modo debe ser cliente o negocio.' });
     }
@@ -198,7 +230,42 @@ export class AuthController {
     if (modo === 'negocio' && !cuenta.negocio) {
       throw new ForbiddenException({ code: 'NEGOCIO_NO_REGISTRADO', message: 'Primero registra tu negocio.' });
     }
+    if (modo === 'negocio') await this.exigirSegundoPaso(cuenta, codigo);
     return this.sesionDeCuenta(cuenta, modo, req.user.name);
+  }
+
+  /** GET /api/auth/2fa → { activo }: si la cuenta tiene la verificación en dos pasos. */
+  @UseGuards(JwtAuthGuard)
+  @Get('2fa')
+  async estadoDosPasos(@Req() req: AuthedRequest) {
+    return this.reenviar(await dosPasos(this.cuentaDeSesion(req), 'estado'));
+  }
+
+  /**
+   * POST /api/auth/2fa/iniciar → { otpauthUri, secreto }. Solo en modo negocio.
+   * El navegador muestra el QR para escanearlo con la app autenticadora.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('2fa/iniciar')
+  @HttpCode(200)
+  async iniciarDosPasos(@Req() req: AuthedRequest) {
+    if (req.user.role !== 'negocio') {
+      throw new ForbiddenException({ code: 'ROL_NO_AUTORIZADO', message: 'La verificación en dos pasos se activa desde el modo negocio.' });
+    }
+    return this.reenviar(await dosPasos(this.cuentaDeSesion(req), 'iniciar'));
+  }
+
+  /** POST /api/auth/2fa/confirmar { codigo } → { activo: true }. El primer código de la app la activa. */
+  @UseGuards(JwtAuthGuard)
+  @Post('2fa/confirmar')
+  @HttpCode(200)
+  async confirmarDosPasos(@Req() req: AuthedRequest, @Body('codigo') codigo: unknown) {
+    if (req.user.role !== 'negocio') {
+      throw new ForbiddenException({ code: 'ROL_NO_AUTORIZADO', message: 'La verificación en dos pasos se activa desde el modo negocio.' });
+    }
+    const r = this.reenviar(await dosPasos(this.cuentaDeSesion(req), 'confirmar', codigo));
+    this.logger.log(`Verificación en dos pasos activada para la cuenta ${this.cuentaDeSesion(req)}.`);
+    return r;
   }
 
   /**
