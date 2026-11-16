@@ -23,6 +23,7 @@ import { createPlace, cuentaPorId, dosPasos, googleAccount, ownedPlaceId, regist
 import { type GoogleIdentity, verificarGoogle } from './google';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { SEED_USERS, type Role } from './seed-users';
+import { sesionesEmitidas } from '../observability/metrics';
 
 /** Un ID token de Google es un JWT de ~1 KB; se corta antes de mandarlo a verificar. */
 const MAX_CREDENCIAL = 4096;
@@ -53,6 +54,7 @@ export class AuthController {
   constructor(private jwt: JwtService) {}
 
   private sign(who: Who): string {
+    sesionesEmitidas.inc({ modo: who.role });
     return this.jwt.sign({
       sub: who.sub,
       name: who.name,
