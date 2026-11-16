@@ -17,15 +17,15 @@ describe('AttackDetector', () => {
     detector.cerrar();
   });
 
-  it('debe extraer la IP correctamente desde x-forwarded-for o req.ip', () => {
-    const req1 = { headers: { 'x-forwarded-for': '203.0.113.195, 70.41.3.18' } } as unknown as Request;
-    expect(detector.obtenerIp(req1)).toBe('203.0.113.195');
+  it('usa la IP que resolvió Express (trust proxy) y no confía en X-Forwarded-For del cliente', () => {
+    const falsificada = { headers: { 'x-forwarded-for': '203.0.113.195' }, ip: '198.51.100.1' } as unknown as Request;
+    expect(detector.obtenerIp(falsificada)).toBe('198.51.100.1');
 
-    const req2 = { headers: {}, ip: '198.51.100.1' } as unknown as Request;
-    expect(detector.obtenerIp(req2)).toBe('198.51.100.1');
+    const soloSocket = { headers: { 'x-forwarded-for': '203.0.113.195' }, socket: { remoteAddress: '192.168.1.5' } } as unknown as Request;
+    expect(detector.obtenerIp(soloSocket)).toBe('192.168.1.5');
 
-    const req3 = { headers: {}, socket: { remoteAddress: '192.168.1.5' } } as unknown as Request;
-    expect(detector.obtenerIp(req3)).toBe('192.168.1.5');
+    const nada = { headers: {} } as unknown as Request;
+    expect(detector.obtenerIp(nada)).toBe('127.0.0.1');
   });
 
   it('no debe bloquear una IP con menos fallos que el umbral', async () => {

@@ -1,4 +1,6 @@
 import axios, { AxiosRequestConfig, AxiosResponse } from 'axios';
+import { Agent } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import type { Request, Response } from 'express';
 import CircuitBreaker from 'opossum';
 
@@ -21,6 +23,9 @@ export interface ForwardOptions {
    */
   passToken?: boolean;
 }
+
+/** Agente HTTP sin keep-alive para hablar con los servicios internos. */
+const agenteSinKeepAlive = new Agent({ keepAlive: false });
 
 /** Mapa de circuit breakers por URL base del servicio. */
 export const breakers = new Map<string, CircuitBreaker<[AxiosRequestConfig], AxiosResponse>>();
@@ -81,17 +86,22 @@ export async function forward(base: string, req: Request, res: Response, opts: F
       'x-user-role': user?.role ?? '',
       'x-user-place-id': user?.placeId ?? '',
       'x-gateway-key': process.env.GATEWAY_KEY ?? '',
-      'x-correlation-id': (req.headers['x-correlation-id'] as string) ?? (req.headers['x-request-id'] as string) ?? cryptoRandomId(),
-      'x-request-id': (req.headers['x-request-id'] as string) ?? cryptoRandomId(),
+      'x-correlation-id': (req.headers['x-correlation-id'] as string) ?? (req.headers['x-request-id'] as string) ?? randomUUID(),
+      'x-request-id': (req.headers['x-request-id'] as string) ?? randomUUID(),
       ...token,
     },
     validateStatus: () => true,
+    // Sin keep-alive: cada llamada abre conexión y vuelve a resolver el nombre interno,
+    // así el tráfico se reparte entre las réplicas del servicio (ESC-04).
+    httpAgent: agenteSinKeepAlive,
   };
 
   const breaker = getCircuitBreaker(base);
 
   try {
     const upstream = await breaker.fire(config);
+    const servidoPor = upstream.headers?.['x-served-by'];
+    if (typeof servidoPor === 'string') res.setHeader('x-upstream-served-by', servidoPor.slice(0, 64));
     res.status(upstream.status).json(upstream.data);
   } catch (_err) {
     res.status(503).json({
@@ -99,8 +109,4 @@ export async function forward(base: string, req: Request, res: Response, opts: F
       message: `El servicio ${base} no está disponible en este momento.`,
     });
   }
-}
-
-function cryptoRandomId(): string {
-  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
 }
