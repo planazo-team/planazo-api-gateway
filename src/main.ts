@@ -69,4 +69,7 @@ async function bootstrap() {
   await app.listen(port);
   console.log(`api-gateway escuchando en :${port}`);
 }
-bootstrap();
+bootstrap().catch((err: unknown) => {
+  console.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
+  process.exit(1);
+});
