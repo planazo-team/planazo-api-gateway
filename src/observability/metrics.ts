@@ -54,7 +54,7 @@ const vistos = new Map<string, number>();
 export function registrarActividad(userId: string, ahora = Date.now()) {
   vistos.set(userId, ahora);
 }
-new Gauge({
+export const usuariosActivos = new Gauge({
   name: 'planazo_usuarios_activos',
   help: 'Usuarios con actividad en los últimos 5 minutos',
   registers: [registro],
