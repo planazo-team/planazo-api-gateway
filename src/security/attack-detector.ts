@@ -34,6 +34,7 @@ export class AttackDetector {
           maxRetriesPerRequest: 1,
           enableOfflineQueue: false,
         });
+        this.redis.on('error', (err: Error) => logger.warn(`Redis (detección de ataques): ${err.message}`));
         this.redis.connect().catch((err) => {
           logger.warn(`No se pudo conectar a Redis para detección de ataques, usando memoria: ${err.message}`);
           this.redis = null;
@@ -44,11 +45,12 @@ export class AttackDetector {
     }
   }
 
+  /**
+   * IP del cliente tal como la resuelve Express con `trust proxy` (main.ts): la que
+   * agregó el proxy de la plataforma. No se lee el primer valor de X-Forwarded-For,
+   * porque ese lo escribe el propio cliente y se puede falsificar.
+   */
   public obtenerIp(req: Request): string {
-    const forwarded = req.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string') {
-      return forwarded.split(',')[0].trim();
-    }
     return req.ip || req.socket?.remoteAddress || '127.0.0.1';
   }
 

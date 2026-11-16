@@ -2,7 +2,9 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
+import { accessLog } from './observability/access-log';
 import { AttackDetector } from './security/attack-detector';
 import { auditLogService } from './security/audit';
 
@@ -33,9 +35,19 @@ function assertProductionSecrets() {
 async function bootstrap() {
   assertProductionSecrets();
 
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  app.enableCors({ origin: allowedOrigins(), credentials: true });
+  // Detrás del proxy de la plataforma: req.ip es la IP que agregó el proxy (último salto),
+  // no lo que el cliente escriba en X-Forwarded-For. Lo usan el rate limit, el detector
+  // de ataques y la bitácora. TRUST_PROXY_HOPS=0 lo apaga (por ejemplo, sin proxy en local).
+  app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1));
+
+  app.use(accessLog());
+  app.enableCors({
+    origin: allowedOrigins(),
+    credentials: true,
+    exposedHeaders: ['x-served-by', 'x-upstream-served-by', 'x-request-id'],
+  });
   app.use(helmet());
 
   const attackDetector = new AttackDetector();

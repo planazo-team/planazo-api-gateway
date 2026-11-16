@@ -14,8 +14,12 @@ export interface AuditRecord {
   details?: Record<string, unknown>;
 }
 
+/** Registros que se guardan en memoria; los más viejos salen (la copia durable queda en el log). */
+export const MAX_REGISTROS_EN_MEMORIA = 5000;
+
 export class AuditLogService {
-  // Almacén en memoria de bitácora (append-only)
+  // Bitácora append-only en memoria y acotada. Cada registro sale además al log como JSON:
+  // esa es la copia durable (la plataforma conserva los logs y la app no puede editarlos).
   private readonly bitacora: AuditRecord[] = [];
 
   public registrar(record: Omit<AuditRecord, 'id' | 'at'>): AuditRecord {
@@ -27,6 +31,7 @@ export class AuditLogService {
 
     // Bitácora append-only: nunca se permite modificar ni borrar registros
     this.bitacora.push(Object.freeze(entry));
+    if (this.bitacora.length > MAX_REGISTROS_EN_MEMORIA) this.bitacora.shift();
 
     logger.log(
       `[AUDIT_LOG] accion=${entry.action} usuario=${entry.userId} ip=${entry.ip} corrId=${entry.correlationId}`,
@@ -90,10 +95,8 @@ export class AuditLogService {
         if (res.statusCode >= 200 && res.statusCode < 400) {
           const user = (req as any).user;
           const userId = user?.sub ?? (req.headers['x-user-id'] as string) ?? 'anonimo';
-          const ip =
-            typeof req.headers['x-forwarded-for'] === 'string'
-              ? req.headers['x-forwarded-for'].split(',')[0].trim()
-              : req.ip || req.socket?.remoteAddress || '127.0.0.1';
+          // IP resuelta por Express con trust proxy (no el X-Forwarded-For que manda el cliente).
+          const ip = req.ip || req.socket?.remoteAddress || '127.0.0.1';
           const correlationId = (req.headers['x-correlation-id'] as string) || (req.headers['x-request-id'] as string) || 'sin-id';
 
           this.registrar({
