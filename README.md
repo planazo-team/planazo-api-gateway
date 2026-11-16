@@ -1,5 +1,7 @@
 # planazo-api-gateway
 
+[![Quality Gate](https://sonarcloud.io/api/project_badges/measure?project=planazo-team_planazo-api-gateway&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=planazo-team_planazo-api-gateway) [![Cobertura](https://sonarcloud.io/api/project_badges/measure?project=planazo-team_planazo-api-gateway&metric=coverage)](https://sonarcloud.io/component_measures?id=planazo-team_planazo-api-gateway&metric=coverage)
+
 Único punto de entrada HTTP de Planazo. Hace el inicio de sesión con Google y firma el JWT de Planazo, lo valida en cada petición, aplica un límite de peticiones por IP, y reenvía cada ruta al microservicio dueño. `agent` vive aquí dentro como un módulo — no tiene repo propio.
 
 | | |
