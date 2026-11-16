@@ -46,8 +46,7 @@ async function bootstrap() {
   app.enableCors({
     origin: allowedOrigins(),
     credentials: true,
-    exposedHeaders: ['x-served-by', 'x-upstream-served-by', 'x-request-id'],
-  });
+    exposedHeaders: ['x-served-by', 'x-upstream-served-by', 'x-request-id'],  });
   app.use(helmet());
 
   const attackDetector = new AttackDetector();
