@@ -13,6 +13,13 @@
 
 **No tiene base de datos ni lógica de negocio propia**, salvo firmar el JWT y armar el plan del agente.
 
+**Escenario 4 (Disponibilidad):** `docker compose up` en este repo levanta 2
+réplicas de este servicio + un balanceador Nginx propio (`nginx.conf`),
+publicado en el mismo puerto `8080` de siempre. Requiere que
+`planazo-infra` ya esté arriba (crea la red compartida `planazo-net` y las
+bases de datos/Redis). Detalle completo:
+[`planazo-infra/ESCENARIO-04-DISPONIBILIDAD.md`](https://github.com/planazo-team/planazo-infra/blob/main/ESCENARIO-04-DISPONIBILIDAD.md).
+
 ---
 
 ## Rutas
