@@ -18,6 +18,9 @@ export class AttackDetector {
   private readonly ventana: number;
   private readonly bloqueo: number;
 
+  /** Último aviso de que se está contando en memoria (para no inundar el log). */
+  private ultimoAvisoMemoria = 0;
+
   // Fallback en memoria si Redis no está disponible
   private readonly memErrores = new Map<string, { count: number; expiresAt: number }>();
   private readonly memBloqueados = new Map<string, number>();
@@ -36,6 +39,7 @@ export class AttackDetector {
           enableOfflineQueue: false,
         });
         this.redis.on('error', (err: Error) => logger.warn(`Redis (detección de ataques): ${err.message}`));
+        this.redis.on('ready', () => logger.log('Detector de ataques: contador compartido en Redis entre las réplicas.'));
         this.redis.connect().catch((err) => {
           logger.warn(`No se pudo conectar a Redis para detección de ataques, usando memoria: ${err.message}`);
           this.redis = null;
@@ -60,8 +64,8 @@ export class AttackDetector {
       try {
         const existe = await this.redis.exists(`ip:blocked:${ip}`);
         return existe === 1;
-      } catch {
-        // En caso de fallo de Redis, recurre a memoria
+      } catch (err) {
+        this.avisarMemoria('consultar el bloqueo', err);
       }
     }
 
@@ -90,12 +94,12 @@ export class AttackDetector {
             `[ALERTA_SEGURIDAD] Ataque detectado: IP ${ip} bloqueada por ${this.bloqueo / 60} minutos tras registrar ${total} errores 401/429 en 1 minuto.`,
           );
           ataquesDetectados.inc();
-          ataquesDetectados.inc();
-      return { bloqueada: true, total };
+          return { bloqueada: true, total };
         }
+        this.avisarProgreso(ip, total, 'redis');
         return { bloqueada: false, total };
-      } catch {
-        // Recurre a memoria si falla Redis
+      } catch (err) {
+        this.avisarMemoria('contar el error', err);
       }
     }
 
@@ -118,7 +122,26 @@ export class AttackDetector {
       return { bloqueada: true, total };
     }
 
+    this.avisarProgreso(ip, total, 'memoria');
     return { bloqueada: false, total };
+  }
+
+  /** Cada 10 errores de una misma IP deja una línea: se ve subir el contador antes del bloqueo. */
+  private avisarProgreso(ip: string, total: number, contador: 'redis' | 'memoria'): void {
+    if (total % 10 !== 0) return;
+    logger.warn(`[DETECTOR] IP ${ip}: ${total} errores 401/429 en el último minuto (bloqueo al pasar de ${this.umbral}; contador en ${contador}).`);
+  }
+
+  /**
+   * Redis falló y se cuenta en la memoria de esta réplica: con dos réplicas cada una ve
+   * solo la mitad de los errores. Se avisa como mucho una vez por minuto.
+   */
+  private avisarMemoria(operacion: string, err: unknown): void {
+    const ahora = Date.now();
+    if (ahora - this.ultimoAvisoMemoria < 60_000) return;
+    this.ultimoAvisoMemoria = ahora;
+    const motivo = err instanceof Error ? err.message : String(err);
+    logger.warn(`Detector de ataques: Redis falló al ${operacion} (${motivo}); se cuenta en la memoria de esta réplica.`);
   }
 
   public middleware() {

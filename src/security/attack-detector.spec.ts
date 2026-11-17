@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { AttackDetector } from './attack-detector';
 import type { Request, Response } from 'express';
 import { EventEmitter } from 'events';
@@ -113,5 +114,40 @@ describe('AttackDetector', () => {
     const res = await detector.registrarFallo('10.0.0.1');
     expect(res.bloqueada).toBe(true);
     expect(mockRedis.set).toHaveBeenCalledWith('ip:blocked:10.0.0.1', '1', 'EX', 5);
+  });
+
+  it('si Redis falla cuenta en memoria y lo avisa una sola vez por minuto', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    (detector as any).redis = {
+      exists: jest.fn().mockRejectedValue(new Error('Stream no escribible')),
+      incr: jest.fn().mockRejectedValue(new Error('Stream no escribible')),
+      disconnect: jest.fn(),
+    };
+
+    expect(await detector.estaBloqueada('10.0.0.2')).toBe(false);
+    for (let i = 0; i < 4; i++) await detector.registrarFallo('10.0.0.2');
+
+    expect(await detector.estaBloqueada('10.0.0.2')).toBe(true);
+    const avisos = warn.mock.calls.filter(([m]) => String(m).includes('memoria de esta réplica'));
+    expect(avisos).toHaveLength(1);
+    warn.mockRestore();
+  });
+
+  it('cada 10 errores deja una línea con el contador', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    const grande = new AttackDetector({ umbralErrores: 50 });
+    for (let i = 0; i < 20; i++) await grande.registrarFallo('10.0.0.3');
+    const lineas = warn.mock.calls.map(([m]) => String(m)).filter((m) => m.startsWith('[DETECTOR]'));
+    expect(lineas).toEqual([
+      expect.stringContaining('10 errores 401/429'),
+      expect.stringContaining('20 errores 401/429'),
+    ]);
+    expect(lineas[0]).toContain('contador en memoria');
+
+    (grande as any).redis = { incr: jest.fn().mockResolvedValue(30), expire: jest.fn(), disconnect: jest.fn() };
+    await grande.registrarFallo('10.0.0.3');
+    expect(warn.mock.calls.map(([m]) => String(m)).some((m) => m.includes('30 errores') && m.includes('contador en redis'))).toBe(true);
+    grande.cerrar();
+    warn.mockRestore();
   });
 });
