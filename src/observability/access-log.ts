@@ -25,6 +25,9 @@ export interface LineaDeAcceso {
   ruta: string;
   status: number;
   ms: number;
+  uid?: string;
+  rol?: string;
+  placeId?: string;
   upstream?: string;
 }
 
@@ -58,6 +61,7 @@ export function accessLog(escribir: Escribir = aStdout) {
     res.on('finish', () => {
       const ms = Number(process.hrtime.bigint() - inicio) / 1e6;
       const upstream = res.getHeader('x-upstream-served-by');
+      const user = (req as Request & { user?: { sub?: string; role?: string; placeId?: string } }).user;
       const linea: LineaDeAcceso = {
         t: new Date().toISOString(),
         nivel: nivelDe(res.statusCode),
@@ -68,6 +72,9 @@ export function accessLog(escribir: Escribir = aStdout) {
         ruta: rutaSegura(req.originalUrl || req.url || ''),
         status: res.statusCode,
         ms: Math.round(ms * 10) / 10,
+        ...(user?.sub ? { uid: user.sub } : {}),
+        ...(user?.role ? { rol: user.role } : {}),
+        ...(user?.role === 'negocio' && user.placeId ? { placeId: user.placeId } : {}),
         ...(typeof upstream === 'string' ? { upstream } : {}),
       };
       escribir(JSON.stringify(linea));

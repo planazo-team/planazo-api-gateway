@@ -84,7 +84,8 @@ export async function forward(base: string, req: Request, res: Response, opts: F
       'x-user-id': user?.sub ?? '',
       'x-user-name': encodeURIComponent(user?.name ?? ''),
       'x-user-role': user?.role ?? '',
-      'x-user-place-id': user?.placeId ?? '',
+      // Solo el rol `negocio` transporta `x-user-place-id` hacia los microservicios.
+      'x-user-place-id': user?.role === 'negocio' ? (user.placeId ?? '') : '',
       'x-gateway-key': process.env.GATEWAY_KEY ?? '',
       'x-correlation-id': (req.headers['x-correlation-id'] as string) ?? (req.headers['x-request-id'] as string) ?? randomUUID(),
       'x-request-id': (req.headers['x-request-id'] as string) ?? randomUUID(),

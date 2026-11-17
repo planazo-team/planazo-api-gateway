@@ -8,6 +8,8 @@ export interface AuditRecord {
   id: string;
   at: number;
   userId: string;
+  role?: 'cliente' | 'negocio';
+  placeId?: string;
   action: string;
   ip: string;
   correlationId: string;
@@ -33,8 +35,10 @@ export class AuditLogService {
     this.bitacora.push(Object.freeze(entry));
     if (this.bitacora.length > MAX_REGISTROS_EN_MEMORIA) this.bitacora.shift();
 
+    const rolTxt = entry.role ? ` rol=${entry.role}` : '';
+    const placeTxt = entry.placeId ? ` placeId=${entry.placeId}` : '';
     logger.log(
-      `[AUDIT_LOG] accion=${entry.action} usuario=${entry.userId} ip=${entry.ip} corrId=${entry.correlationId}`,
+      `[AUDIT_LOG] accion=${entry.action} usuario=${entry.userId}${rolTxt}${placeTxt} ip=${entry.ip} corrId=${entry.correlationId}`,
     );
 
     return entry;
@@ -63,8 +67,11 @@ export class AuditLogService {
     if (m === 'POST' && (cleanPath === '/api/auth/negocio' || cleanPath === '/api/places')) {
       return 'CREAR_LUGAR';
     }
-    if (m === 'POST' && cleanPath.endsWith('/reclamar')) {
+    if (m === 'POST' && (cleanPath.endsWith('/reclamar') || cleanPath.endsWith('/claim'))) {
       return 'RECLAMAR_CUPON';
+    }
+    if (m === 'POST' && cleanPath === '/api/events') {
+      return 'CREAR_EVENTO';
     }
     if (m === 'POST' && cleanPath === '/api/promos') {
       return 'CREAR_PROMO';
@@ -98,12 +105,16 @@ export class AuditLogService {
         if (res.statusCode >= 200 && res.statusCode < 400) {
           const user = (req as any).user;
           const userId = user?.sub ?? (req.headers['x-user-id'] as string) ?? 'anonimo';
+          const role = user?.role ?? (req.headers['x-user-role'] as 'cliente' | 'negocio' | undefined);
+          const placeId = role === 'negocio' ? (user?.placeId ?? (req.headers['x-user-place-id'] as string | undefined)) : undefined;
           // IP resuelta por Express con trust proxy (no el X-Forwarded-For que manda el cliente).
           const ip = req.ip || req.socket?.remoteAddress || '127.0.0.1';
           const correlationId = (req.headers['x-correlation-id'] as string) || (req.headers['x-request-id'] as string) || 'sin-id';
 
           this.registrar({
             userId,
+            ...(role ? { role } : {}),
+            ...(placeId ? { placeId } : {}),
             action: accion,
             ip,
             correlationId,
