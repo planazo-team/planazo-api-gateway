@@ -101,5 +101,32 @@ describe('google.ts', () => {
       const res = await verificarGoogle('old-token', { maxEdadSeg: 300 });
       expect(res).toEqual({ ok: false, code: 'CREDENCIAL_VIEJA' });
     });
+
+    it('debe verificar credenciales emitidas por Firebase Auth (Google o correo)', async () => {
+      process.env.GOOGLE_CLIENT_ID = 'client-123';
+      (OAuth2Client.prototype.verifyIdToken as jest.Mock)
+        .mockRejectedValueOnce(new Error('Wrong audience'))
+        .mockResolvedValueOnce({
+          getPayload: () => ({
+            sub: 'fb-uid-1',
+            email: 'cami@test.com',
+            email_verified: false,
+            iss: 'https://securetoken.google.com/planazo-auth',
+            iat: Math.floor(Date.now() / 1000) - 5,
+          }),
+        });
+
+      const meta = Buffer.from(JSON.stringify({ sub: 'fb-uid-1', name: 'Camila', email: 'cami@test.com' })).toString('base64');
+      const wrapped = `eyJhbGciOiJmaXJlYmFzZSJ9.${meta}.header.payload.sig`;
+      const res = await verificarGoogle(wrapped);
+      expect(res).toEqual({
+        ok: true,
+        id: {
+          sub: 'fb-uid-1',
+          email: 'cami@test.com',
+          name: 'Camila',
+        },
+      });
+    });
   });
 });
